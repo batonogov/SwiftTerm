@@ -2456,8 +2456,9 @@ final class MetalTerminalRenderer: NSObject, MTKViewDelegate {
                 let fit = terminalView.glyphSlotFit(font: ctFont, glyph: glyph, columnWidth: max(1, Int(charData.width)))
                 let basePos = CGPoint(x: lineOrigin.x + cellWidth * doublePosition * CGFloat(buffer.x) + fit.dx * doublePosition,
                                       y: lineOrigin.y + yOffset + ctPos.y + fit.dy)
-                let pxX = basePos.x * scale + entry.bearing.x * fit.scale
-                let pxY = basePos.y * scale + entry.bearing.y * fit.scale
+                // Snap to the same integral device-pixel grid as the text pass.
+                let pxX = (basePos.x * scale + entry.bearing.x * fit.scale).rounded()
+                let pxY = (basePos.y * scale + entry.bearing.y * fit.scale).rounded()
                 let x0 = Float(pxX)
                 let y0 = Float(pxY)
                 let x1 = x0 + Float(entry.size.width * fit.scale)
