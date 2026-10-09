@@ -52,12 +52,17 @@ extension CaretView {
         if let powerlineCodePoint,
            PowerlineRenderer.shouldRender(codePoint: powerlineCodePoint,
                                           customGlyphsEnabled: terminal.customBlockGlyphs) {
+            let caretScale = terminal.backingScaleFactor()
+            let minThicknessPx = max(1, Int(round(caretScale)))
+            let lineWidthPx = max(minThicknessPx,
+                                  Int(round(caretScale * terminal.fontSet.underlineThickness() * 1.35)))
             PowerlineRenderer.draw(codePoint: powerlineCodePoint,
                                    in: context,
                                    cellRect: bounds,
-                                   scaleX: terminal.backingScaleFactor(),
-                                   scaleY: terminal.backingScaleFactor(),
-                                   color: caretFG.cgColor)
+                                   scaleX: caretScale,
+                                   scaleY: caretScale,
+                                   color: caretFG.cgColor,
+                                   lineWidthPx: lineWidthPx)
             context.restoreGState()
             return
         }

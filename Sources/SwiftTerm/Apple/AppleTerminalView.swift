@@ -438,16 +438,30 @@ extension TerminalView {
         return CellDimension(width: max(1, snappedWidth), height: max(min(snappedHeight, 8192), 1))
     }
 
+    /// Whether `font` is a CoreText fallback substitution rather than one of
+    /// the configured font set's faces.  Fallback glyphs (Nerd Font icons,
+    /// symbols missing from the base font) can carry advances far wider than
+    /// the cell — those are centered and scaled down by ``glyphSlotFit``.
+    func isFallbackFont (_ font: CTFont) -> Bool {
+        let ttFont = font as TTFont
+        return ttFont !== fontSet.normal && ttFont !== fontSet.bold
+            && ttFont !== fontSet.italic && ttFont !== fontSet.boldItalic
+    }
+
     /// Computes how to center `glyph` within its `columnWidth`-cell slot (and
     /// scale it down if its ink overflows). Returns ``GlyphSlotFit/identity`` for
     /// ordinary single-cell glyphs, so Latin text in a monospace font is rendered
-    /// exactly as before and the hot path stays untouched. Shared by the
+    /// exactly as before and the hot path stays untouched. Single-cell glyphs
+    /// from fallback fonts are fitted too, but only when their advance overflows
+    /// the cell — Nerd Font icons often arrive with a ~2 em advance that would
+    /// otherwise spill into the neighbor cell or be clipped. Shared by the
     /// CoreGraphics and Metal glyph renderers so they stay pixel-consistent.
     func glyphSlotFit (font: CTFont, glyph: CGGlyph, columnWidth: Int) -> GlyphSlotFit
     {
-        // Only wide cells need adjusting: a single-width glyph in a monospace
-        // font already fills its cell, so we skip the metric lookups entirely.
-        guard columnWidth >= 2, cellDimension != nil else { return .identity }
+        // Only wide cells and fallback-font glyphs need adjusting: a
+        // single-width glyph from the base font already fills its cell, so we
+        // skip the metric lookups entirely on that hot path.
+        guard columnWidth >= 2 || isFallbackFont(font), cellDimension != nil else { return .identity }
 
         let cellWidth = cellDimension.width
         let cellHeight = cellDimension.height
@@ -457,6 +471,12 @@ extension TerminalView {
         var advance = CGSize.zero
         CTFontGetAdvancesForGlyphs(font, .horizontal, &g, &advance, 1)
         guard advance.width > 0 else { return .identity }
+
+        // A single-cell fallback glyph whose advance fits the slot needs no
+        // adjustment; only oversized advances are centered/downscaled.
+        if columnWidth < 2, advance.width <= slotWidth {
+            return .identity
+        }
 
         var ink = CGRect.zero
         CTFontGetBoundingRectsForGlyphs(font, .horizontal, &g, &ink, 1)
@@ -1753,6 +1773,11 @@ extension TerminalView {
         case .doubledDown, .doubledTop: scaleY = scale * 2
         case .single, .doubleWidth: scaleY = scale
         }
+        // Same stroke thickness as the box-drawing renderer's light lines, so
+        // thin powerline separators match the other custom glyphs.
+        let minThicknessPx = max(1, Int(round(scale)))
+        let lineWidthPx = max(minThicknessPx,
+                              Int(round(scale * fontSet.underlineThickness() * 1.35)))
         for item in items {
             let cellRect = CGRect(x: lineOrigin.x + CGFloat(item.column) * cellDimension.width,
                                   y: lineOrigin.y,
@@ -1763,7 +1788,8 @@ extension TerminalView {
                                    cellRect: cellRect,
                                    scaleX: scaleX,
                                    scaleY: scaleY,
-                                   color: item.foregroundColor.cgColor)
+                                   color: item.foregroundColor.cgColor,
+                                   lineWidthPx: lineWidthPx)
         }
     }
 
@@ -2109,12 +2135,14 @@ extension TerminalView {
 
                     // Center full-width (CJK) and substituted glyphs within their
                     // multi-cell slot instead of pinning them to the cell's left
-                    // edge. `positions` stays grid-aligned for the decorations
+                    // edge; single-cell fallback glyphs whose advance overflows
+                    // the cell (Nerd Font icons) are centered/downscaled the same
+                    // way. `positions` stays grid-aligned for the decorations
                     // below; only `glyphPositions` is shifted/scaled.
                     let ctRunFont = runFont as CTFont
                     var glyphPositions = positions
                     var scaledFits: [GlyphSlotFit]? = nil
-                    if prepared.segment.columnWidth >= 2 {
+                    if prepared.segment.columnWidth >= 2 || isFallbackFont(ctRunFont) {
                         var computed = [GlyphSlotFit](repeating: .identity, count: runGlyphsCount)
                         var anyScaled = false
                         for i in 0..<runGlyphsCount {
@@ -2125,6 +2153,15 @@ extension TerminalView {
                             if fit.scale != 1 { anyScaled = true }
                         }
                         if anyScaled { scaledFits = computed }
+                    }
+
+                    // Snap glyph origins to integral device pixels, like the
+                    // cell backgrounds, so glyph bitmaps are not rasterized at
+                    // fractional offsets (fractional sampling renders gray/soft).
+                    let pixelScale = backingScaleFactor()
+                    for i in 0..<runGlyphsCount {
+                        glyphPositions[i].x = alignToPixel(glyphPositions[i].x, scale: pixelScale, rule: .toNearestOrAwayFromZero)
+                        glyphPositions[i].y = alignToPixel(glyphPositions[i].y, scale: pixelScale, rule: .toNearestOrAwayFromZero)
                     }
 
                     if let scaledFits {

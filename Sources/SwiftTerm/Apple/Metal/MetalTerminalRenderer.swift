@@ -1053,7 +1053,7 @@ final class MetalTerminalRenderer: NSObject, MTKViewDelegate {
                                                    cellWidthPx: itemWidthPx,
                                                    cellHeightPx: baseCellHeightPx,
                                                    scale: scale,
-                                                   baseThicknessPx: 0,
+                                                   baseThicknessPx: baseThicknessPx,
                                                    antiAlias: true) else {
                     continue
                 }
@@ -1062,10 +1062,11 @@ final class MetalTerminalRenderer: NSObject, MTKViewDelegate {
                 let v0 = Float(entry.region.y) / atlasSize
                 let u1 = Float(entry.region.x + entry.region.width) / atlasSize
                 let v1 = Float(entry.region.y + entry.region.height) / atlasSize
-                let alignedOriginX = round(lineOriginPx.x) + CGFloat(item.column * baseCellWidthPx)
-                let alignedOriginY = round(lineOriginPx.y)
-                let x0 = alignedOriginX
-                let y0 = alignedOriginY
+                // Share the background quads' unrounded origin: rounding the
+                // separator to a different grid leaves a half-device-pixel
+                // step at the segment joint when the view height is fractional.
+                let x0 = lineOriginPx.x + CGFloat(item.column) * cellWidthPx
+                let y0 = lineOriginPx.y
                 let x1 = x0 + entry.size.width
                 let y1 = y0 + entry.size.height
                 let (tx0, ty0, tx1, ty1) = transformRect(x0: x0, y0: y0, x1: x1, y1: y1)
@@ -1283,6 +1284,10 @@ final class MetalTerminalRenderer: NSObject, MTKViewDelegate {
                 var anchorX: CGFloat = 0
                 for glyphRun in run.shaperRun.glyphRuns {
                     let scaledFont = scaledFontFor(font: glyphRun.font, scale: scale)
+                    // Wide (CJK) cells and fallback-font glyphs (Nerd Font
+                    // icons can arrive with a ~2 em advance) need slot fitting;
+                    // ordinary single-cell base-font glyphs skip it entirely.
+                    let needsSlotFit = shaped.segment.columnWidth >= 2 || terminalView.isFallbackFont(glyphRun.font)
                     for i in 0..<glyphRun.glyphs.count {
                         let glyph = glyphRun.glyphs[i]
                         guard let entry = glyphEntry(for: scaledFont, glyph: glyph) else {
@@ -1308,15 +1313,19 @@ final class MetalTerminalRenderer: NSObject, MTKViewDelegate {
                         // cell's left edge, mirroring the CoreGraphics path. The
                         // decoration loops below keep using the grid column, so
                         // underlines/strikethroughs stay cell-aligned.
-                        let fit = shaped.segment.columnWidth >= 2
+                        let fit = needsSlotFit
                             ? terminalView.glyphSlotFit(font: glyphRun.font,
                                                         glyph: glyph,
                                                         columnWidth: shaped.segment.columnWidth)
                             : GlyphSlotFit.identity
                         let basePos = CGPoint(x: lineOrigin.x + (cellWidth * CGFloat(glyphColumn)) + intraCluster + fit.dx,
                                               y: lineOrigin.y + yOffset + ctPos.y + fit.dy)
-                        let pxX = basePos.x * scale + entry.bearing.x * fit.scale
-                        let pxY = basePos.y * scale + entry.bearing.y * fit.scale
+                        // Snap to integral device pixels, like the background
+                        // quads, so the integer-aligned atlas bitmap is not
+                        // resampled at a fractional offset (that sampling is
+                        // what makes text look gray/soft).
+                        let pxX = (basePos.x * scale + entry.bearing.x * fit.scale).rounded()
+                        let pxY = (basePos.y * scale + entry.bearing.y * fit.scale).rounded()
 
                         let x0 = pxX
                         let y0 = pxY
@@ -1717,6 +1726,7 @@ final class MetalTerminalRenderer: NSObject, MTKViewDelegate {
                                        scaleX: scale,
                                        scaleY: scale,
                                        color: TTColor.white.cgColor,
+                                       lineWidthPx: baseThicknessPx,
                                        includeJoinOverdraw: false)
                 return true
             case UInt32(BoxDrawingRenderer.lowerBoundary)...UInt32(BoxDrawingRenderer.upperBoundary):
