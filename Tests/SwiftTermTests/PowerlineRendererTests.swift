@@ -189,6 +189,34 @@ final class PowerlineRendererTests: XCTestCase {
         }
     }
 
+    func testThinShapesHonorProductionStrokeWidth() throws {
+        // Production passes the box-drawing light-line thickness (a few device
+        // pixels), not a hairline; the stroke must actually reach that width.
+        let scale = 2
+        let lineWidthPx = 2 * scale
+        let thick = try bitmap(codePoint: 0xE0B9, scale: scale, lineWidthPx: lineWidthPx)
+        let hairline = try bitmap(codePoint: 0xE0B9, scale: scale)
+        let midX = (thick.cellMinX + thick.cellMaxX - 1) / 2
+        let midY = thick.height / 2
+
+        // The center of the stroke is fully covered at production thickness.
+        XCTAssertEqual(thick[midX, midY], 255)
+
+        func strokeRun(_ bitmap: Bitmap) -> Int {
+            var run = 0
+            var x = midX
+            while x >= bitmap.cellMinX, bitmap[x, midY] > 0 { run += 1; x -= 1 }
+            x = midX + 1
+            while x < bitmap.cellMaxX, bitmap[x, midY] > 0 { run += 1; x += 1 }
+            return run
+        }
+        // A 4-device-px stroke on a 16x24 cell diagonal spans ~5 px across the
+        // row; the hairline spans 1-2. Both must stay inside the cell.
+        XCTAssertGreaterThanOrEqual(strokeRun(thick), lineWidthPx - 1)
+        XCTAssertLessThan(strokeRun(hairline), strokeRun(thick))
+        assertNoJoinOverdraw(thick, direction: .right)
+    }
+
     func testThinDiagonalsStrokeCornerToCorner() throws {
         for scale in [2, 3] {
             // E0B9 "\": top-left to bottom-right; E0BB "/": bottom-left to top-right.
@@ -290,7 +318,7 @@ final class PowerlineRendererTests: XCTestCase {
         subscript(_ x: Int, _ y: Int) -> UInt8 { alpha[y * width + x] }
     }
 
-    private func bitmap(codePoint: UInt32, scale: Int, horizontalTransform: Int = 1) throws -> Bitmap {
+    private func bitmap(codePoint: UInt32, scale: Int, horizontalTransform: Int = 1, lineWidthPx: Int = 0) throws -> Bitmap {
         let cellWidth = 8 * scale * horizontalTransform
         let cellHeight = 12 * scale
         let width = cellWidth + 2
@@ -315,7 +343,8 @@ final class PowerlineRendererTests: XCTestCase {
                                    cellRect: rect,
                                    scaleX: scaleX,
                                    scaleY: CGFloat(scale),
-                                   color: CGColor(gray: 1, alpha: 1))
+                                   color: CGColor(gray: 1, alpha: 1),
+                                   lineWidthPx: lineWidthPx)
             return true
         }
         XCTAssertTrue(created)

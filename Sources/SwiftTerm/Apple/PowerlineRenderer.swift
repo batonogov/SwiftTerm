@@ -255,7 +255,11 @@ enum PowerlineRenderer {
         context.clip(to: CGRect(x: minX, y: minY, width: maxX - minX, height: maxY - minY))
         if glyph.isStroked {
             context.setStrokeColor(color)
-            context.setLineWidth(CGFloat(max(1, lineWidthPx)) / scaleX)
+            // Thickness tracks the vertical device scale: equal to scaleX on
+            // single and doubled-up/down lines, and on double-width lines it
+            // avoids the half-thickness stroke that dividing by the doubled
+            // scaleX would produce.
+            context.setLineWidth(CGFloat(max(1, lineWidthPx)) / scaleY)
             context.setLineJoin(.round)
             context.addPath(path)
             context.strokePath()

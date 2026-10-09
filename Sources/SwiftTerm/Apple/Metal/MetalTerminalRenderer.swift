@@ -2384,11 +2384,16 @@ final class MetalTerminalRenderer: NSObject, MTKViewDelegate {
                                           customGlyphsEnabled: terminalView.customBlockGlyphs) {
             let cursorCellWidthPx = max(1, Int(round(cellWidthPx * doublePosition * cursorColumnWidth)))
             let cursorCellHeightPx = max(1, Int(round(cellHeightPx)))
+            // Same stroke thickness as the row pass, so thin separators under
+            // the block cursor match the glyphs they replace.
+            let minThicknessPx = max(1, Int(round(scale)))
+            let baseThicknessPx = max(minThicknessPx,
+                                      Int(round(scale * terminalView.fontSet.underlineThickness() * 1.35)))
             if let entry = customGlyphEntry(codePoint: UInt32(charData.code),
                                             cellWidthPx: cursorCellWidthPx,
                                             cellHeightPx: cursorCellHeightPx,
                                             scale: scale,
-                                            baseThicknessPx: 0,
+                                            baseThicknessPx: baseThicknessPx,
                                             antiAlias: true) {
                 let atlasSize = Float(grayscaleAtlas.size)
                 let u0 = Float(entry.region.x) / atlasSize
