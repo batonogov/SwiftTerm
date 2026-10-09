@@ -21,7 +21,7 @@ let SwiftTermUnderlineStyleKey = NSAttributedString.Key("SwiftTermUnderlineStyle
 
 #if os(iOS) || os(visionOS)
 import UIKit
-typealias TTColor = UIColor
+public typealias TTColor = UIColor
 typealias TTFont = UIFont
 typealias TTRect = CGRect
 typealias TTBezierPath = UIBezierPath
@@ -30,7 +30,7 @@ public typealias TTImage = UIImage
 
 #if os(macOS)
 import AppKit
-typealias TTColor = NSColor
+public typealias TTColor = NSColor
 typealias TTFont = NSFont
 typealias TTRect = CGRect
 typealias TTBezierPath = NSBezierPath
@@ -485,7 +485,14 @@ extension TerminalView {
         return GlyphSlotFit(dx: dx, dy: dy, scale: scale)
     }
 
-    func mapColor (color: Attribute.Color, isFg: Bool, isBold: Bool, useBrightColors: Bool = true) -> TTColor
+    /// Maps a terminal attribute color to a native color using the current palette.
+    ///
+    /// The `useBrightColors` parameter only controls whether bold text on the
+    /// base ANSI slots (0-7) is promoted to the bright slots (8-15). Whether
+    /// palette indexes above 7 address their own slots or are folded onto the
+    /// base palette is governed by the view's `collapseBrightColorsToBase`
+    /// property, so the two behaviors can be configured independently.
+    public func mapColor (color: Attribute.Color, isFg: Bool, isBold: Bool, useBrightColors: Bool = true) -> TTColor
     {
         switch color {
         case .defaultColor:
@@ -513,12 +520,19 @@ extension TerminalView {
             }
         case .ansi256(let ansi):
             var midx: Int
-            // if high - bright colors are enabled we will represent bold text by using more intense colors
-            // otherwise we will reduce colors but use bold fonts
             if useBrightColors {
+                // if high - bright colors are enabled we will represent bold text by using more intense colors
                 midx = ansi < 7 ? (Int (ansi) + (isBold ? 8 : 0)) : Int (ansi)
-            } else {
+            } else if collapseBrightColorsToBase {
+                // legacy: fold every index above 7 onto the base palette
+                // (bright slots 8-15 as well as the 16-255 cube/ramp) and
+                // rely on bold fonts to provide the emphasis instead
                 midx = ansi > 7 ? (Int (ansi) - 8) : Int(ansi)
+            } else {
+                // bright and extended indexes address their own palette
+                // slots; `useBrightColors` only controls the bold -> bright
+                // promotion above
+                midx = Int (ansi)
             }
             if let c = colors [midx] {
                 return c
@@ -868,8 +882,11 @@ extension TerminalView {
         }
         
         var useBoldForBrightColor: Bool = false
-        // if high - bright colors are disabled in settings we will use bold font instead
-        if case .ansi256(let code) = fg, code > 7, !useBrightColors {
+        // if high - bright colors are disabled in settings and the bright
+        // slots are collapsed onto the base palette, we use a bold font
+        // instead so the emphasis survives the collapse; when the slots are
+        // addressable the bright color speaks for itself
+        if case .ansi256(let code) = fg, code > 7, !useBrightColors, collapseBrightColorsToBase {
             useBoldForBrightColor = true
         }
         var tf: TTFont

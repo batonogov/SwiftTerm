@@ -230,6 +230,11 @@ terminalView.antiAliasCustomBlockGlyphs = true
 
 // Use bright colors for bold text (traditional terminal behavior)
 terminalView.useBrightColors = true
+
+// When useBrightColors is false, bright ANSI indexes (8-15) are historically
+// collapsed onto the base slots 0-7. Set this to false to give the bright
+// slots their own palette entries while bold text keeps its base color.
+terminalView.collapseBrightColorsToBase = false
 ```
 
 ### GPU-Accelerated Rendering

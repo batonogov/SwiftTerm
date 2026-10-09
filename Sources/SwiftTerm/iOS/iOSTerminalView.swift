@@ -1375,6 +1375,26 @@ open class TerminalView: UIScrollView, UITextInputTraits, UIKeyInput, UIScrollVi
     /// Controls weather to use high ansi colors, if false terminal will use bold text instead of high ansi colors
     public var useBrightColors: Bool = true
 
+    /// Controls whether palette indexes above 7 are collapsed onto the base
+    /// slots 0-7 when `useBrightColors` is false.
+    ///
+    /// Defaults to true, preserving the historical behavior where
+    /// `useBrightColors = false` folds the bright ANSI slots 8-15 (SGR 90-97
+    /// and `\e[38;5;8m` … `\e[38;5;15m`) — and, incidentally, every extended
+    /// index in the 16-255 range — onto `index - 8`, leaving slots 8-15
+    /// unreachable for foreground text and forcing it to a bold font instead.
+    ///
+    /// Set to false to let indexes 8-255 address their own palette slots
+    /// while `useBrightColors = false` keeps bold text from being promoted
+    /// to the bright slots. This decouples "bold renders as bright" from
+    /// "bright indexes collapse to base colors", which used to be two sides
+    /// of the single `useBrightColors` switch.
+    public var collapseBrightColorsToBase: Bool = true {
+        didSet {
+            colorsChanged()
+        }
+    }
+
     /// Controls whether this view applies the terminal's BiDi presentation state.
     public var bidiHostPolicy: BidiHostPolicy = .respectTerminal {
         didSet {
