@@ -866,6 +866,30 @@ open class TerminalView: NSView, NSTextInputClient, NSUserInterfaceValidations, 
         }
     }
 
+    var _linkColor: NSColor? = nil
+    /// The color used to underline hyperlinks (OSC 8 payloads and implicit
+    /// link matches), or `nil` to underline links in the cell's foreground
+    /// color — the historical behavior and the default.
+    ///
+    /// Only the underline decoration is recolored; the link text keeps its
+    /// cell foreground so program-owned SGR colors stay intact. Assigning a
+    /// new value flushes the cached link attributes and repaints.
+    public var linkColor: NSColor? {
+        get {
+            return _linkColor
+        }
+        set {
+            guard newValue != _linkColor else { return }
+            _linkColor = newValue
+            // Link attributes are cached in `urlAttributes` keyed by the cell
+            // attribute alone, so the cache must be dropped for the new color
+            // to take effect.
+            urlAttributes = [:]
+            terminal.updateFullScreen()
+            queuePendingDisplay()
+        }
+    }
+
     func backingScaleFactor () -> CGFloat
     {
         window?.backingScaleFactor ?? NSScreen.main?.backingScaleFactor ?? 1

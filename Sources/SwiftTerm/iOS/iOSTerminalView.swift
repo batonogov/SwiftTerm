@@ -161,6 +161,25 @@ open class TerminalView: UIScrollView, UITextInputTraits, UIKeyInput, UIScrollVi
         }
     }
 
+    /// The color used to underline hyperlinks (OSC 8 payloads and implicit
+    /// link matches), or `nil` to underline links in the cell's foreground
+    /// color — the historical behavior and the default.
+    ///
+    /// Only the underline decoration is recolored; the link text keeps its
+    /// cell foreground so program-owned SGR colors stay intact. Assigning a
+    /// new value flushes the cached link attributes and repaints.
+    public var linkColor: UIColor? = nil {
+        didSet {
+            guard linkColor != oldValue else { return }
+            // Link attributes are cached in `urlAttributes` keyed by the cell
+            // attribute alone, so the cache must be dropped for the new color
+            // to take effect.
+            urlAttributes = [:]
+            terminal.updateFullScreen()
+            queuePendingDisplay()
+        }
+    }
+
     private var lastReportedLink: String?
     var commandActive = false
     private var activeCommandKeys: Set<UIKeyboardHIDUsage> = []
