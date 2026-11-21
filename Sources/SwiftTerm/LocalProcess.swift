@@ -111,6 +111,7 @@ private struct LocalProcessSessionState {
     var childfd: Int32 = -1
     var shellPid: pid_t = 0
     var terminateRequestedDuringStart = false
+    var terminationEscalationDelay: TimeInterval?
     var reaper: LocalProcessChildReaper?
     var pipeline: TerminalIOPipeline?
     var writeChannel: DispatchIO?
@@ -463,6 +464,18 @@ public class LocalProcess {
         thread.start()
     }
 
+    private static func terminate(
+        _ reaper: LocalProcessChildReaper,
+        escalatingAfter delay: TimeInterval
+    ) {
+        reaper.signal(SIGTERM)
+        DispatchQueue.global(qos: .utility).asyncAfter(
+            deadline: .now() + max(0, delay)
+        ) {
+            reaper.signal(SIGKILL)
+        }
+    }
+
     static func exitCode(fromWaitStatus status: Int32?) -> Int32? {
         guard let status, status & 0x7f == 0 else { return nil }
         return (status >> 8) & 0xff
@@ -498,6 +511,7 @@ public class LocalProcess {
             }
             state.pipeline = nil
             state.reaper = nil
+            state.terminationEscalationDelay = nil
             let writeChannel = state.writeChannel
             state.writeChannel = nil
             state.phase = .windingDown
@@ -558,6 +572,7 @@ public class LocalProcess {
     private func finishLaunchFailure(_ error: LocalProcessError, notify: Bool) {
         let generation = session.withLock { state -> UInt64 in
             state.terminateRequestedDuringStart = false
+            state.terminationEscalationDelay = nil
             state.generation &+= 1
             state.phase = notify ? .windingDown : .idle
             return state.generation
@@ -581,6 +596,7 @@ public class LocalProcess {
         let admitted = session.withLock { state -> Bool in
             guard state.phase == .idle else { return false }
             state.phase = .starting
+            state.terminationEscalationDelay = nil
             return true
         }
         guard admitted else { return .failure(.alreadyRunning) }
@@ -631,13 +647,15 @@ public class LocalProcess {
         let launch = session.withLock { state -> (
             generation: UInt64,
             reaper: LocalProcessChildReaper,
-            terminateRequested: Bool
+            terminateRequested: Bool,
+            terminationEscalationDelay: TimeInterval?
         ) in
             state.generation &+= 1
             // Honor a terminate() that raced this launch during .starting:
             // the child is published already terminating and is signaled
             // below, once the exit trigger is armed.
             let terminateRequested = state.terminateRequestedDuringStart
+            let terminationEscalationDelay = state.terminationEscalationDelay
             state.terminateRequestedDuringStart = false
             state.phase = terminateRequested ? .terminating : .running
             state.shellPid = shellPid
@@ -645,7 +663,12 @@ public class LocalProcess {
             state.writeChannel = writeChannel
             let reaper = LocalProcessChildReaper(pid: shellPid)
             state.reaper = reaper
-            return (state.generation, reaper, terminateRequested)
+            return (
+                state.generation,
+                reaper,
+                terminateRequested,
+                terminationEscalationDelay
+            )
         }
 
         let pipeline = TerminalIOPipeline(fd: childfd, delegate: self)
@@ -698,7 +721,11 @@ public class LocalProcess {
 #endif
 
         if launch.terminateRequested {
-            launch.reaper.signal(SIGTERM)
+            if let delay = launch.terminationEscalationDelay {
+                Self.terminate(launch.reaper, escalatingAfter: delay)
+            } else {
+                launch.reaper.signal(SIGTERM)
+            }
         }
         return .success(())
     }
@@ -709,8 +736,8 @@ public class LocalProcess {
     /// remains true, `startProcess` is refused, and `processTerminated` is
     /// delivered once the child has been reaped and its final output drained.
     /// A child that ignores `SIGTERM` therefore keeps the session occupied
-    /// indefinitely; send `SIGKILL` via `shellPid` to force it, or release
-    /// the instance, whose deinitializer escalates after `killEscalationDelay`.
+    /// indefinitely; use `terminate(escalatingAfter:)` to request bounded
+    /// TERM-to-KILL teardown through the same generation-owned reaper.
     public func terminate() {
         let reaper = session.withLock { state -> LocalProcessChildReaper? in
             switch state.phase {
@@ -730,6 +757,37 @@ public class LocalProcess {
             }
         }
         reaper?.signal(SIGTERM)
+    }
+
+    /// Sends TERM, then KILL after `delay` if this exact child generation has
+    /// not exited. The process monitor remains the sole reaper, and the usual
+    /// `processTerminated` callback is delivered after reaping and output drain.
+    /// Repeated requests schedule at most one escalation for a generation.
+    public func terminate(escalatingAfter delay: TimeInterval) {
+        let request = session.withLock { state -> (
+            reaper: LocalProcessChildReaper,
+            delay: TimeInterval
+        )? in
+            let delay = max(0, delay)
+            switch state.phase {
+            case .starting:
+                state.terminateRequestedDuringStart = true
+                if state.terminationEscalationDelay == nil {
+                    state.terminationEscalationDelay = delay
+                }
+                return nil
+            case .running, .terminating:
+                state.phase = .terminating
+                guard state.terminationEscalationDelay == nil,
+                      let reaper = state.reaper else { return nil }
+                state.terminationEscalationDelay = delay
+                return (reaper, delay)
+            default:
+                return nil
+            }
+        }
+        guard let request else { return }
+        Self.terminate(request.reaper, escalatingAfter: request.delay)
     }
     
     /**

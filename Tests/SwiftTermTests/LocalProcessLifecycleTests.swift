@@ -193,6 +193,87 @@ final class LocalProcessLifecycleTests: XCTestCase {
         XCTAssertEqual(terminationCount.withLock { $0 }, 2)
     }
 
+    func testTerminateWithEscalationReapsTermIgnoringChild() throws {
+        let ready = expectation(description: "child installed its signal handlers")
+        let terminated = expectation(description: "child reaped after escalation")
+        let delegate = LifecycleDelegate()
+        let notified = Locked(false)
+        delegate.onData = {
+            let first = notified.withLock { value -> Bool in
+                guard !value else { return false }
+                value = true
+                return true
+            }
+            if first { ready.fulfill() }
+        }
+        delegate.onTermination = { terminated.fulfill() }
+        let process = LocalProcess(delegate: delegate)
+        try process.startProcessChecked(executable: "/bin/sh", args: ["-c",
+            "trap '' HUP TERM; printf ready; while :; do sleep 1; done"
+        ]).get()
+        let pid = process.shellPid
+        defer { process.terminate(escalatingAfter: 0) }
+        wait(for: [ready], timeout: 5)
+
+        process.terminate(escalatingAfter: 0.05)
+        process.terminate(escalatingAfter: 5)
+
+        wait(for: [terminated], timeout: 5)
+        XCTAssertEqual(kill(pid, 0), -1)
+        XCTAssertEqual(errno, ESRCH)
+        XCTAssertNil(delegate.exitCode)
+        XCTAssertFalse(process.running)
+    }
+
+    func testTerminateWithEscalationDuringStartSurvivesLaunchHandoff() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("swiftterm-start-escalation-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let marker = directory.appendingPathComponent("ready")
+        let descriptorEntered = expectation(description: "launch reached descriptor setup")
+        let terminated = expectation(description: "child reaped after deferred escalation")
+        let continueDescriptor = DispatchSemaphore(value: 0)
+        let delegate = LifecycleDelegate()
+        delegate.onTermination = { terminated.fulfill() }
+        let process = LocalProcess(
+            delegate: delegate,
+            duplicateDescriptor: { fd in
+                descriptorEntered.fulfill()
+                _ = continueDescriptor.wait(timeout: .now() + 5)
+                return dup(fd)
+            })
+        defer {
+            continueDescriptor.signal()
+            process.terminate(escalatingAfter: 0)
+            try? FileManager.default.removeItem(at: directory)
+        }
+        let launchProcess = Locked(process)
+        DispatchQueue.global(qos: .userInitiated).async {
+            launchProcess.withLock { process in
+                process.startProcess(executable: "/bin/sh", args: ["-c",
+                    "trap '' HUP TERM; printf '%s' $$ > '\(marker.path)'; while :; do sleep 1; done"
+                ])
+            }
+        }
+        wait(for: [descriptorEntered], timeout: 5)
+        XCTAssertTrue(waitUntil(timeout: 5, interval: 0.01) {
+            guard let text = try? String(contentsOf: marker, encoding: .utf8),
+                  let pid = Int32(text) else { return false }
+            return pid > 1
+        })
+        let pid = try XCTUnwrap(Int32(String(
+            contentsOf: marker,
+            encoding: .utf8)))
+
+        process.terminate(escalatingAfter: 0.05)
+        continueDescriptor.signal()
+
+        wait(for: [terminated], timeout: 5)
+        XCTAssertEqual(kill(pid, 0), -1)
+        XCTAssertEqual(errno, ESRCH)
+        XCTAssertNil(delegate.exitCode)
+    }
+
     func testReapedChildDrainsOutputBeforeCallbackDrivenRelaunch() throws {
         let payload = Data(repeating: 0x78, count: 256 * 1024)
         let fileURL = FileManager.default.temporaryDirectory
